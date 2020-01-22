@@ -21,19 +21,39 @@ cordapp {
     }
     targetPlatformVersion 4
     minimumPlatformVersion 3
-    contract {
-        name "Corda Training Material"
-        vendor "R3"
-        licence "Contact R3 for Kotlin Source Contract License."
-        versionId 1
+    info {
+        name "CorDapp Template"
+        vendor "Corda Open Source"
     }
-    workflow {
-        name "Corda Training Material"
-        vendor "R3"
-        licence "Contact R3 for Kotlin Source Workflow License."
-        versionId 1
-    }
+//    contract {
+//        name "Corda Training Material"
+//        vendor "R3"
+//        licence "Contact R3 for Kotlin Source Contract License."
+//        versionId 1
+//    }
+//    workflow {
+//        name "Corda Training Material"
+//        vendor "R3"
+//        licence "Contact R3 for Kotlin Source Workflow License."
+//        versionId 1
+//    }
 }
+
+//allProjects {
+//    jar {
+//        destinationDir = "$rootDir/build/libs"
+//        // This makes the JAR's SHA-256 hash repeatable.
+//        preserveFileTimestamps = false
+//        reproducibleFileOrder = true
+//    }
+//}
+
+//jar {
+//    destinationDir = file("$rootDir/zoom/libs")
+//    // This makes the JAR's SHA-256 hash repeatable.
+//    preserveFileTimestamps = false
+//    reproducibleFileOrder = true
+//}
 
 sourceSets {
     main {

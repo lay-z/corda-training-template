@@ -1,20 +1,19 @@
 package net.corda.training.flow
 
 import co.paralleluniverse.fibers.Suspendable
+import net.corda.core.contracts.Command
 import net.corda.core.contracts.UniqueIdentifier
 import net.corda.core.contracts.requireThat
-import net.corda.core.flows.CollectSignaturesFlow
-import net.corda.core.flows.FinalityFlow
-import net.corda.core.flows.FlowLogic
-import net.corda.core.flows.FlowSession
-import net.corda.core.flows.InitiatedBy
-import net.corda.core.flows.InitiatingFlow
-import net.corda.core.flows.SignTransactionFlow
-import net.corda.core.flows.StartableByRPC
+import net.corda.core.flows.*
 import net.corda.core.identity.Party
+import net.corda.core.node.services.queryBy
+import net.corda.core.node.services.vault.QueryCriteria
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
+import net.corda.training.contract.IOUContract
 import net.corda.training.state.IOUState
+import org.checkerframework.common.aliasing.qual.Unique
+import java.lang.IllegalArgumentException
 
 /**
  * This is the flow which handles transfers of existing IOUs on the ledger.
@@ -27,10 +26,37 @@ import net.corda.training.state.IOUState
 class IOUTransferFlow(val linearId: UniqueIdentifier, val newLender: Party): FlowLogic<SignedTransaction>() {
     @Suspendable
     override fun call(): SignedTransaction {
-        // Placeholder code to avoid type error when running the tests. Remove before starting the flow task!
-        return serviceHub.signInitialTransaction(
-                TransactionBuilder(notary = null)
+        val notary = serviceHub.networkMapCache.notaryIdentities.first()
+        val me = serviceHub.myInfo.legalIdentities.first()
+        val unsignedTransaction = TransactionBuilder(notary=notary)
+        // Fetech the IOUState from vault
+        val iouQuery = serviceHub.vaultService.queryBy(IOUState::class.java, criteria = QueryCriteria.LinearStateQueryCriteria(linearId = listOf(linearId)))
+
+        val iouState = iouQuery.states.first()
+        val iou = iouState.state.data
+
+        if (iou.lender != me) {
+            throw IllegalArgumentException("Requester has to be lender, cannot be any other party")
+        }
+
+        val issueCommand = Command(IOUContract.Commands.Transfer(), listOf(iou.lender.owningKey, iou.borrower.owningKey, newLender.owningKey))
+
+        unsignedTransaction.addCommand(issueCommand)
+        unsignedTransaction.addOutputState(iou.withNewLender(newLender))
+        unsignedTransaction.addInputState(iouState)
+
+
+        unsignedTransaction.verify(serviceHub)
+
+        val privateSignedTransaction = serviceHub.signInitialTransaction(
+                unsignedTransaction
         )
+
+        val flows = (listOf(newLender) + iou.participants).filter { it != me }.map { initiateFlow(it) }
+
+        val signedTransactions = subFlow(CollectSignaturesFlow(privateSignedTransaction, flows))
+
+        return subFlow(FinalityFlow(signedTransactions, flows))
     }
 }
 
@@ -50,5 +76,6 @@ class IOUTransferFlowResponder(val flowSession: FlowSession): FlowLogic<Unit>() 
         }
 
         subFlow(signedTransactionFlow)
+        subFlow(ReceiveFinalityFlow(flowSession))
     }
 }

@@ -4,19 +4,16 @@ import co.paralleluniverse.fibers.Suspendable
 import net.corda.core.contracts.Amount
 import net.corda.core.contracts.UniqueIdentifier
 import net.corda.core.contracts.requireThat
-import net.corda.core.flows.CollectSignaturesFlow
-import net.corda.core.flows.FinalityFlow
-import net.corda.core.flows.FlowLogic
-import net.corda.core.flows.FlowSession
-import net.corda.core.flows.InitiatedBy
-import net.corda.core.flows.InitiatingFlow
-import net.corda.core.flows.SignTransactionFlow
-import net.corda.core.flows.StartableByRPC
+import net.corda.core.flows.*
+import net.corda.core.node.services.vault.QueryCriteria
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.finance.contracts.asset.Cash
 import net.corda.finance.flows.CashIssueFlow
+import net.corda.finance.workflows.asset.CashUtils
+import net.corda.finance.workflows.getCashBalance
+import net.corda.training.contract.IOUContract
 import net.corda.training.state.IOUState
 import java.util.*
 
@@ -28,13 +25,46 @@ import java.util.*
  */
 @InitiatingFlow
 @StartableByRPC
-class IOUSettleFlow(val linearId: UniqueIdentifier, val amount: Amount<Currency>): FlowLogic<SignedTransaction>() {
+class IOUSettleFlow(val linearId: UniqueIdentifier, val amount: Amount<Currency>) : FlowLogic<SignedTransaction>() {
     @Suspendable
     override fun call(): SignedTransaction {
-        // Placeholder code to avoid type error when running the tests. Remove before starting the flow task!
-        return serviceHub.signInitialTransaction(
-                TransactionBuilder(notary = null)
-        )
+        val notary = serviceHub.networkMapCache.notaryIdentities.first()
+        val me = serviceHub.myInfo.legalIdentities.first()
+        val iouState = serviceHub.vaultService.queryBy(
+                IOUState::class.java,
+                QueryCriteria.LinearStateQueryCriteria(linearId = listOf(linearId))
+        ).states.first()
+
+        val iou = iouState.state.data
+
+        if (iou.borrower != me) {
+            throw IllegalArgumentException("Expected initiating node to be owned by borrower.")
+        }
+
+        val balance = serviceHub.getCashBalance(iou.amount.token)
+
+        if (balance.quantity == 0L) {
+            throw IllegalArgumentException("""Borrower has no ${iou.amount.token} to settle.""")
+        }
+        if (balance < amount) {
+            throw IllegalArgumentException("Borrower has only ${balance} but needs ${amount} to settle.")
+        }
+
+        val utx = TransactionBuilder(notary = notary)
+                .addCommand(IOUContract.Commands.Settle(), iou.participants.map { it.owningKey })
+                .addOutputState(iou.pay(amount))
+                .addInputState(iouState)
+
+        val (withCashTx, _) = CashUtils.generateSpend(serviceHub, utx, amount, serviceHub.myInfo.legalIdentitiesAndCerts.first(), iou.lender)
+
+        withCashTx.verify(serviceHub)
+
+        val ptx = serviceHub.signInitialTransaction(withCashTx)
+
+        val flows = iou.participants.filter { it != me }.map { initiateFlow(it) }
+
+        val signed = subFlow(CollectSignaturesFlow(ptx, flows))
+        return subFlow(FinalityFlow(signed, flows))
     }
 }
 
@@ -43,7 +73,7 @@ class IOUSettleFlow(val linearId: UniqueIdentifier, val amount: Amount<Currency>
  * The signing is handled by the [SignTransactionFlow].
  */
 @InitiatedBy(IOUSettleFlow::class)
-class IOUSettleFlowResponder(val flowSession: FlowSession): FlowLogic<Unit>() {
+class IOUSettleFlowResponder(val flowSession: FlowSession) : FlowLogic<Unit>() {
     @Suspendable
     override fun call() {
         val signedTransactionFlow = object : SignTransactionFlow(flowSession) {
@@ -54,6 +84,7 @@ class IOUSettleFlowResponder(val flowSession: FlowSession): FlowLogic<Unit>() {
         }
 
         subFlow(signedTransactionFlow)
+        subFlow(ReceiveFinalityFlow(flowSession))
     }
 }
 
